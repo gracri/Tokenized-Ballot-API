@@ -79,7 +79,7 @@ export class AppService {
   }
 
   async mintTokens(body: any) {
-    const mintTx = await this.tokenContract.mint(ADDRESS, ethers.utils.parseEther("3"));
+    const mintTx = await this.tokenContract.mint(body.address, body.amount);
     await mintTx.wait();
     return true;
   }
