@@ -2,7 +2,7 @@ import { Body } from '@nestjs/common';
 import { Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiConflictResponse } from '@nestjs/swagger';
 import { stringify } from 'querystring';
-import { AppService, PaymentOrder, RequestPaymentDTO, Vote } from './app.service';
+import { AppService } from './app.service';
 
 @Controller()
 export class AppController {
@@ -10,45 +10,58 @@ export class AppController {
 constructor(private readonly appService: AppService) {}
 
 
-@Get('get-token-address')
-tokenAddress() {
-  const result = this.appService.tokenAddress();
-  return {result};
-}
-
-@Get('get-ballot-contract-address')
-getBallotContractAddress() {
-  const result = this.appService.getBallotContractAddress();
-  return {result};
-}
-
-@Get('get-wallet-address')
-walletAddress() {
-  const result = this.appService.walletAddress();
-  return {result};
-}
-
-@Get('get-winner')
-getWinner(){
-  const result = this.appService.getWinner();
+@Get('check-state')
+checkState() {
+  const result = this.appService.checkState();
   return result;
 }
 
-@Post('mint-tokens')
-async mintTokens(@Body() body:any) {
-  const result = await this.appService.mintTokens(body);
+@Post('open-bets')
+async openBets(@Body() body:any) {
+  const result = await this.appService.openBets(body);
   return {result};
 }
 
-@Post('delegate')
-async delegate(@Body() body:any) {
-  const result = await this.appService.delegate(body);
+//might not need this one
+@Post('top-up-account-tokens')
+async topUpAccountTokens(@Body() body:any) {
+  const result = await this.appService.topUpAccountTokens(body);
   return {result};
 }
 
-@Post('vote')
-async vote(@Body() body: any) {
-  const result = await this.appService.vote(body);
+@Get('display-balance')
+displayBalance(@Query('index') index: string) {
+  const result = this.appService.displayBalance(index);
+  return result;
+}
+
+@Post('bet')
+async bet(@Body() body:any) {
+  const result = await this.appService.bet(body);
+  return {result};
+}
+
+@Post('close-bets')
+async closeBets() {
+  const result = await this.appService.closeBets();
+  return {result};
+}
+
+@Get('check-player-prize')
+async checkPlayerPrize(@Body() body: any) {
+  const result = this.appService.checkPlayerPrize(body);
+  return {result};
+}
+
+@Post('withdraw')
+async withdraw(@Body() body:any) {
+  const result = await this.appService.withdraw(body);
+  return {result};
+}
+
+@Post('burn-tokens')
+async burnTokens(@Body() body:any) {
+  const result = await this.appService.burnTokens(body);
   return {result};
 }
  

@@ -1,121 +1,212 @@
 import { HttpException, Injectable } from '@nestjs/common';
-import {ethers, BigNumber} from "ethers";
-import * as TokenJson from './assets/MyToken.json'
-import * as BallotJson from './assets/tokenizedBallot.json'
+import {ethers, BigNumber, Signer} from "ethers";
+import * as TokenJson from './assets/LotteryToken.json'
+import * as LotteryJson from './assets/Lottery.json'
 import { ContractFactory } from 'ethers';
 
-const TOKEN_CONTRACT_ADDRESS = '0xf6aD19c2d76F197C573AF32A5b95085Fc34f351f';
-const ADDRESS = "0x6e878B50d3dA403435be5d7CEdD3d4b051792bD7";
-const PROPOSALS = ["Proposal 1", "Proposal 2", "Proposal 3"];
-
-
-export class RequestPaymentDTO {
-  id: string;
-  secret: string;
-  address: string;
-}
-
-export class PaymentOrder {
-  id: string;
-  secret: string;
-  amount: string;
-}
-
-export class Vote {
-  proposal: string;
-  amount: string;
-}
+const LOTTERY_CONTRACT_ADDRESS = '0x49EF71f9cb373B6aBc017153B286261844d4cAB1';
+const BET_PRICE = 0.002;
+const BET_FEE = 0.002;
 
 @Injectable()
 export class AppService {
   
   provider: ethers.providers.Provider;
-  tokenContract: ethers.Contract;
-  ballotContract: ethers.Contract
-  wallet: ethers.Wallet;
-  signer: ethers.Signer;
-  
-  database: PaymentOrder[];
+  token: ethers.Contract;
+  lotteryContract: ethers.Contract
+  accounts: Signer[];
   
   constructor() {
     const options = {
       alchemy: process.env.ALCHEMY_API_KEY,
       infura: process.env.INFURA_API_KEY,
     };
-    this.database = [];
-    this.provider = ethers.getDefaultProvider('goerli', options)
-    this.wallet = ethers.Wallet.fromMnemonic(process.env.MNEMONIC ?? '')
-    this.signer = this.wallet.connect(this.provider)
-    this.tokenContract = new ethers.Contract(
-      TOKEN_CONTRACT_ADDRESS,
-      TokenJson.abi,
-      this.provider,
-    ).connect(this.signer);
+    this.provider = ethers.getDefaultProvider('goerli', options);
+    const wallet1 = ethers.Wallet.fromMnemonic(process.env.MNEMONIC3 ?? '');
+    const wallet2 = ethers.Wallet.fromMnemonic(process.env.MNEMONIC ?? '');
+    const signer1 = wallet1.connect(this.provider);
+    const signer2 = wallet2.connect(this.provider);
+    this.accounts = [
+      signer1, signer2
+    ];
+    
+    //this.initContracts();
 
+    const contract = new ethers.Contract(
+      LOTTERY_CONTRACT_ADDRESS,
+      LotteryJson.abi,
+      this.provider,
+    ).connect(signer1);
+    this.lotteryContract = contract;
+    this.initTokenContract();
+
+  }
+
+  async initTokenContract(){
+    const tokenAddress = await this.lotteryContract.paymentToken();
+    const tokenFactory = new ContractFactory(TokenJson.abi, TokenJson.bytecode, this.accounts[0]);
+    this.token = tokenFactory.attach(tokenAddress);
+    console.log(`The lottery contract: ${this.lotteryContract.address}\n`);
+    console.log(`The token contract: ${this.token.address}\n`);
+  }
+
+  //Deploys a new lottery contract
+  async initContracts() {
+    const factory = new ContractFactory(LotteryJson.abi, LotteryJson.bytecode, this.accounts[0]);
+    const contract = await factory.deploy(
+      "LotteryToken",
+      "LTO",
+      ethers.utils.parseEther(BET_PRICE.toFixed(18)), 
+      ethers.utils.parseEther(BET_FEE.toFixed(18)));
+    await contract.deployed();
+    const tokenAddress = await contract.paymentToken();
+    const tokenFactory = new ContractFactory(TokenJson.abi, TokenJson.bytecode, this.accounts[0]);
+    this.token = tokenFactory.attach(tokenAddress);
+    this.lotteryContract = contract;
+    console.log(`The lottery contract: ${contract.address}\n`);
+    console.log(`The token contract: ${this.token.address}\n`);
+  }
+
+  async checkState() {
+    const state = await this.lotteryContract.betsOpen();
+    console.log(`The lottery is ${state ? "open" : "closed"}\n`);
+    if (!state) return  {status: state};
+
+    const currentBlock = await this.provider.getBlock("latest");
+    const currentBlockDate = new Date(currentBlock.timestamp * 1000);
+    const closingTime = await this.lotteryContract.betsClosingTime();
+    const closingTimeDate = new Date(closingTime.toNumber() * 1000);
+    console.log(
+        `The last block was mined at ${currentBlockDate.toLocaleDateString()} : ${currentBlockDate.toLocaleTimeString()}`
+    )
+    console.log(
+        `lottery should close at ${closingTimeDate.toLocaleDateString} : ${closingTimeDate.toLocaleTimeString()}`
+    )
+    return  {
+      status: state, 
+      currentBlockTime: `${currentBlockDate.toLocaleDateString()} : ${currentBlockDate.toLocaleTimeString()}`,
+      closingTime: `${closingTimeDate.toLocaleDateString()} : ${closingTimeDate.toLocaleTimeString()}`
+    };
+  }
+
+  async openBets(body: any) {
+    const currentBlock = await this.provider.getBlock("latest");
+    const tx = await this.lotteryContract.openBets(currentBlock.timestamp + Number(body.duration));
+    const receipt = await tx.wait();
+    console.log(`Bets opened (${receipt.transactionHash})`);
+    return receipt.transactionHash;
+  }
+
+  async displayBalance(index: string) {
+    const balanceBN = await this.provider.getBalance(
+    this.accounts[Number(index)].getAddress()
+    );
+    const balance = ethers.utils.formatEther(balanceBN);
+    console.log(
+      `The account of address ${
+        this.accounts[Number(index)]
+      } has ${balance} ETH\n`
+    )
+    return balance;
+  }
+
+  topUpAccountTokens(body: any) {
+    return this.buyTokens(body.index, body.amount);
+  }
+
+  async buyTokens(index: string, amount: string) {
+    const tx = await this.lotteryContract.connect(this.accounts[index]).purchaseTokens({
+      value: ethers.utils.parseEther(amount), 
+    });
+    const receipt = await tx.wait();
+    console.log(`Tokens bought (${receipt.transactionHash})\n`);
+    //show remaining eth balance
+    let balance = this.displayBalance(index);
+    //show token balance
+    let tokenBalance = this.displayTokenBalance(index)
+    return {txhash: receipt.transactionHash, balance: balance, tokenBalance: tokenBalance };
+  }
+
+  async displayTokenBalance(index: string) {
+    const balanceBN = await this.token.balanceOf(this.accounts[Number(index)].getAddress());
+    const balance = ethers.utils.formatEther(balanceBN);
+    console.log(
+      `The account of address ${
+        this.accounts[Number(index)]
+      } has ${balance} Tokens\n`
+    )
+    return balance
+  }
+
+  async bet(body: any) {
+    const allowTx = await this.token
+    .connect(this.accounts[Number(body.index)])
+    .approve(this.lotteryContract.address, ethers.constants.MaxUint256);
+  await allowTx.wait();
+  //const tx = await this.lotteryContract.connect(this.signer).betMany(body.amount);
+  const tx = await this.lotteryContract.bet();
+  const receipt = await tx.wait();
+  console.log(`Bets placed (${receipt.transactionHash})\n`);
+  let tokenBalance = this.displayTokenBalance(body.index);
+  return {txhash: receipt.transactionHash, tokenBalance: tokenBalance}
+  }
+
+  async burnTokens(body: any) {
+    //TODO: connect to account index dynamically
+    const allowTx = await this.token
+      .connect(this.accounts[Number(body.index)])
+      .approve(this.lotteryContract.address, ethers.constants.MaxUint256);
+    const receiptAllow = await allowTx.wait();
+    console.log(`Allowance confirmed (${receiptAllow.transactionHash})\n`);
+    const tx = await this.lotteryContract
+      //.connect(this.accounts[Number(index)])
+      .connect(this.accounts[Number(body.index)])
+      .returnTokens(ethers.utils.parseEther(body.amount));
+    const receipt = await tx.wait();
+    console.log(`Burn confirmed (${receipt.transactionHash})\n`)
+    return receipt.transactionHash
+  }
+
+  async withdraw(body: any) {
+    const tx = await this.lotteryContract.ownerWithdraw(ethers.utils.parseEther(body.amount));
+    const receipt = await tx.wait();
+    console.log(`Withdraw confirmed (${receipt.transactionHash})\n`)
+    return receipt.transactionHash;
+  }
+
+  async closeBets() {
+    const tx = await this.lotteryContract.closeLottery();
+    const receipt = await tx.wait();
+    console.log(`Bets closed (${receipt.transactionHash})\n`);
+    return true;
+  }
+
+  async checkPlayerPrize(body: any) {
+    const prizeBN = await this.lotteryContract.prize(this.accounts[Number(body.index)]);
+    const prize = ethers.utils.formatEther(prizeBN);
+    console.log(
+      `The account of address ${
+        this.accounts[Number(body.index)]
+      } has earned a prize of ${prize} Tokens\n`
+    );
+    return prize;
   }
   
-  tokenAddress() {
-    return TOKEN_CONTRACT_ADDRESS;
+  async claimPrize(body:any) {
+    //TODO: dynamically pass amount to withdraw
+    const tx = await this.lotteryContract 
+      .connect(this.accounts[Number(body.index)])
+      .prizeWithdraw(ethers.utils.parseEther(body.amount));
+      const receipt = await tx.wait();
+      console.log(`Prize claimed (${receipt.transactionHash})\n`);
+      return receipt.transactionHash;
   }
 
-  walletAddress() {
-    return ADDRESS;
-  }
-
-  getPaymentOrderById(id: string) {
-    const element= this.database.find((element) => element.id === id);
-    if (!element) throw new HttpException("Payment Order not found", 404);
-    return {id: element.id, amount: element.amount};
-  }
-
-  async getWinner() {
-    const winningProposal = await this.ballotContract.winnerName();
-    const name = ethers.utils.parseBytes32String(winningProposal);
-    return name;
-  }
-
-  getBallotContractAddress() {
-    return this.ballotContract.address;
-  }
-
-  async mintTokens(body: any) {
-    const mintTx = await this.tokenContract.mint(body.address, body.amount);
-    await mintTx.wait();
-    return true;
-  }
-
-  async vote(body: any) {
-    this.ballotContract.connect(this.signer);
-    const castVoteTx = await this.ballotContract.vote(body.proposal, body.amount);
-    const castVoteTxReceipt = await castVoteTx.wait();
-    return true;
-  }
-
-  async delegate(body: any){
-    const delegateTx = await this.tokenContract.delegate(ADDRESS);
-    await delegateTx.wait();
-    //Create the ballot contract (must be done after delegating to have the right block number)
-    this.createBallotContract();
-    return true;
-  }
-
-  async createBallotContract() {
-    const currentBlock = await this.provider.getBlockNumber();
-    const factory = new ContractFactory(BallotJson.abi, BallotJson.bytecode, this.signer);
-    const contract = await factory.deploy(
-      this.convertStringArrayToBytes32(PROPOSALS), TOKEN_CONTRACT_ADDRESS, currentBlock
-    );
-    await contract.deployed();
-    this.ballotContract = contract;
-    return this.ballotContract.address;  
-  }
-
-   convertStringArrayToBytes32(array: string[]) {
-    const bytes32Array = [];
-    for (let index = 0; index < array.length; index++) {
-      bytes32Array.push(ethers.utils.formatBytes32String(array[index]));
-    }
-    return bytes32Array;
+  async displayOwnerPool() {
+    const balanceBN = await this.lotteryContract.ownerPool();
+    const balance = ethers.utils.formatEther(balanceBN);
+    console.log(`The owner pool has (${balance}) Tokens \n`);
+    return balance;
   }
 
 }
